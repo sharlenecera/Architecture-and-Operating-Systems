@@ -43,26 +43,30 @@ def scan_one_path(path: Path) -> Dict[str, Any]:
     Collect file details + basic metadata + basic permissions for ONE filesystem entry.
     Keep it simple: permissions are POSIX mode bits + uid/gid where available.
     """
-    rec: Dict[str, Any] = {"path": str(path), "name": path.name}
+    rec: Dict[str, Any] = {
+        "path": str(path),
+        "name": path.name
+    }
 
     try:
         st = path.lstat()  # don't follow symlinks
-
+        
+        # bool values
         rec["is_file"] = stat.S_ISREG(st.st_mode)
         rec["is_dir"] = stat.S_ISDIR(st.st_mode)
         rec["is_symlink"] = stat.S_ISLNK(st.st_mode)
 
         rec["size_bytes"] = st.st_size
-        rec["mtime"] = st.st_mtime
-        rec["atime"] = st.st_atime
-        rec["ctime"] = st.st_ctime
+        rec["mtime"] = st.st_mtime # time last modified
+        rec["atime"] = st.st_atime # time last accessed
+        rec["ctime"] = st.st_ctime # time last metadata change
 
         rec["extension"] = path.suffix.lower()
-        mime, _ = mimetypes.guess_type(str(path))
+        mime, _ = mimetypes.guess_type(str(path)) # e.g. "text/plain" or "image/png"
         rec["mime_guess"] = mime
 
         # Basic permissions snapshot
-        rec["mode_octal"] = oct(stat.S_IMODE(st.st_mode))
+        rec["mode_octal"] = oct(stat.S_IMODE(st.st_mode)) # permission bits
         rec["uid"] = getattr(st, "st_uid", None)
         rec["gid"] = getattr(st, "st_gid", None)
 
@@ -91,25 +95,29 @@ def build_jobs(root: Path) -> List[Job]:
     tick = 0
 
     for dirpath, _, filenames in os.walk(root):
+        # sort filenames if needed
+        # filenames.sort()
         d = Path(dirpath)
         for fn in filenames:
-            p = d / fn
-            tick += 1
+            full_path = d / fn
+            tick += 1 # so each file has diff arrival time
 
             # Simple estimate: larger files => higher cost (bucketed)
             try:
-                size = p.lstat().st_size
+                size = full_path.lstat().st_size if stat.S_ISREG(full_path.lstat().st_mode) else 0
+                # uses st_size only if a file, instead of path size if symlink
             except OSError:
                 size = 0
 
+            # TODO: Improve this
             if size < 100_000:         # < 100 KB
-                est = 1
+                est_cost = 1
             elif size < 10_000_000:    # < 10 MB
-                est = 2
+                est_cost = 2
             else:
-                est = 3
+                est_cost = 3
 
-            jobs.append(Job(path=p, arrival=tick, est_cost=est, remaining=est))
+            jobs.append(Job(path=full_path, arrival=tick, est_cost=est_cost, remaining=est_cost))
 
     return jobs
 
@@ -186,7 +194,7 @@ def run_indexer(root: Path, output_jsonl: Path) -> None:
 
 
 if __name__ == "__main__":
-    root_folder = Path(r"")          # change me
-    out_file = Path("index_results.jsonl")  # output file
-    run_indexer(root_folder, out_file)
-    print(f"Done. Wrote: {out_file.resolve()}")
+    root_folder = Path(r"")
+    output_file = Path.cwd() / "outputs" / "index_results.jsonl"
+    run_indexer(root_folder, output_file)
+    print(f"Done. Wrote: {output_file.resolve()}")
