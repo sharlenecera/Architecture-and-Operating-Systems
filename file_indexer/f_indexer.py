@@ -14,9 +14,11 @@ What this script does:
 from __future__ import annotations
 
 import os
+# import cmd
 import json
 import stat
 import mimetypes
+import hashlib
 from pathlib import Path
 from collections import deque
 from dataclasses import dataclass
@@ -38,14 +40,16 @@ class Job:
 # -----------------------------
 # Indexing work (the "CPU burst")
 # -----------------------------
-def scan_one_path(path: Path) -> Dict[str, Any]:
+def scan_one_path(
+    path: Path,
+) -> Dict[str, Any]:
     """
     Collect file details + basic metadata + basic permissions for ONE filesystem entry.
     Keep it simple: permissions are POSIX mode bits + uid/gid where available.
     """
     rec: Dict[str, Any] = {
         "path": str(path),
-        "name": path.name
+        "name": path.name,
     }
 
     try:
@@ -83,7 +87,10 @@ def scan_one_path(path: Path) -> Dict[str, Any]:
 # -----------------------------
 # Job creation (workload)
 # -----------------------------
-def build_jobs(root: Path) -> List[Job]:
+def build_jobs(
+    root: Path,
+    greater_than: int = 0,
+) -> List[Job]:
     """
     Build jobs from all files under root.
     We add simple fields that schedulers can use:
@@ -109,6 +116,9 @@ def build_jobs(root: Path) -> List[Job]:
             except OSError:
                 size = 0
 
+            if size < greater_than:
+                continue
+
             # TODO: Improve this
             if size < 100_000:         # < 100 KB
                 est_cost = 1
@@ -125,7 +135,10 @@ def build_jobs(root: Path) -> List[Job]:
 # -----------------------------
 # Scheduler hooks (students adapt)
 # -----------------------------
-def choose_next_job(ready: Deque[Job], tick: int) -> Optional[Job]:
+def choose_next_job(
+    ready: Deque[Job],
+    tick: int,
+) -> Optional[Job]:
     """
     STUDENT TASK: Replace this logic to implement a scheduler.
 
@@ -143,7 +156,10 @@ def choose_next_job(ready: Deque[Job], tick: int) -> Optional[Job]:
     return ready.popleft()
 
 
-def on_job_feedback(job: Job, record: Dict[str, Any]) -> None:
+def on_job_feedback(
+    job: Job,
+    record: Dict[str, Any],
+) -> None:
     """
     Optional STUDENT TASK:
     Use job results to change scheduling behaviour.
@@ -159,9 +175,13 @@ def on_job_feedback(job: Job, record: Dict[str, Any]) -> None:
 # -----------------------------
 # Simulation loop (runs "scheduler")
 # -----------------------------
-def run_indexer(root: Path, output_jsonl: Path) -> None:
+def run_indexer(
+    root: Path,
+    output_jsonl: Path,
+    greater_than: int = 0,
+) -> None:
     # Create jobs and load into a ready queue
-    jobs = build_jobs(root)
+    jobs = build_jobs(root, greater_than)
 
     # In this simple model, all jobs are "ready" immediately.
     # Students can extend this by using arrival times more realistically.
@@ -193,8 +213,70 @@ def run_indexer(root: Path, output_jsonl: Path) -> None:
             f.write(json.dumps(record) + "\n")
 
 
+# -----------------------------
+# CLI (first version)
+# -----------------------------
+# class FileIndexerCLI(cmd.Cmd):
+#     prompt = ">> "
+#     welcome_msg = "Welcome to Sharlene's File Indexer CLI> Type \"help\" for available commands."
+
+#     def preloop(self):
+#         """Print welcome message"""
+#         print(self.welcome_msg)
+
+#     def do_index(self, line):
+#         """Create the index results file in outputs folder"""
+#         root_folder = Path(r"")
+#         # output_file = Path.cwd() / "outputs" / "index_results.jsonl"
+#         output_file = Path.cwd() / "temp" / "index_results.jsonl"
+#         run_indexer(root_folder, output_file)
+#         print(f"Done. Wrote: {output_file.resolve()}")
+
+#     def do_find_bigger_than(self, line):
+#         """Find files bigger than x MB"""
+#         print('finding')
+
+#     def do_q(self, line):
+#         """Exit the CLI"""
+#         return True
+
+
+# -----------------------------
+# Indexer tools
+# -----------------------------
+def get_files_greater_than(
+    root: Path,
+    output_jsonl: Path,
+    number: int,
+) -> None:
+    index_results = run_indexer(root, output_jsonl, greater_than=number)
+
+
+def hash_file(
+    file_path: str,
+    hash_type: str,
+) -> Optional[str]:
+    if hash_type.lower() not in hashlib.algorithms_guaranteed:
+        raise ValueError("Invalid hash type.")
+    hash_function = hashlib.new(hash_type.lower())
+    try:
+        # open in binary read mode
+        with open(file_path, "rb") as file:
+            # read the file in 8192 byte chunks
+            while chunk := file.read(8192):
+                hash_function.update(chunk)
+        return hash_function.hexdigest()
+    except FileNotFoundError as e:
+        print(f"File not found: {e}")
+    except:
+        print(f"Other error occurred when hashing file.")
+
+
 if __name__ == "__main__":
+    # FileIndexerCLI().cmdloop()
     root_folder = Path(r"")
-    output_file = Path.cwd() / "outputs" / "index_results.jsonl"
+    # output_file = Path.cwd() / "outputs" / "index_results.jsonl"
+    output_file = Path.cwd() / "temp" / "index_results.jsonl"
     run_indexer(root_folder, output_file)
     print(f"Done. Wrote: {output_file.resolve()}")
+    
