@@ -19,9 +19,12 @@ import json
 import stat
 import mimetypes
 import hashlib
+import threading
+import time
 from pathlib import Path
 from collections import deque
 from dataclasses import dataclass
+from queue import Queue
 from typing import Deque, Dict, Any, List, Optional
 
 
@@ -136,7 +139,7 @@ def build_jobs(
 # Scheduler hooks (students adapt)
 # -----------------------------
 def choose_next_job(
-    ready: Deque[Job],
+    ready: list[Job],
     tick: int,
 ) -> Optional[Job]:
     """
@@ -153,7 +156,7 @@ def choose_next_job(
     """
     if not ready:
         return None
-    return ready.popleft()
+    return ready.pop(0)
 
 
 def on_job_feedback(
@@ -176,16 +179,18 @@ def on_job_feedback(
 # Simulation loop (runs "scheduler")
 # -----------------------------
 def run_indexer(
-    root: Path,
-    output_jsonl: Path,
+    root: Path = Path(r""),
+    output_jsonl: Path = Path("index_results.jsonl"),
     greater_than: int = 0,
 ) -> None:
+    start = time.perf_counter()
+
     # Create jobs and load into a ready queue
     jobs = build_jobs(root, greater_than)
 
     # In this simple model, all jobs are "ready" immediately.
     # Students can extend this by using arrival times more realistically.
-    ready: Deque[Job] = deque(sorted(jobs, key=lambda j: j.arrival))
+    ready: list[Job] = sorted(jobs, key=lambda j: j.arrival)
 
     tick = 0
 
@@ -211,7 +216,66 @@ def run_indexer(
 
             # Write one record per line (easy to parse and analyse)
             f.write(json.dumps(record) + "\n")
+        end = time.perf_counter()
+    print(f"Control indexing for '{root or "root"}' took {end - start: 0.4f} seconds")
 
+
+def run_indexer_threaded(
+    root: Path = Path(r""),
+    output_jsonl: Path = Path("index_results_threaded.jsonl"),
+    greater_than: int = 0,
+    max_workers: int = 8,
+) -> None:
+    start = time.perf_counter()
+
+    jobs = build_jobs(root, greater_than)
+    ready: list[Job] = sorted(jobs, key=lambda j: j.arrival)
+
+    queue: Queue[Job] = Queue()
+    for job in ready:
+        queue.put(job)
+
+    write_lock = threading.Lock()
+    tick_lock = threading.Lock()
+    tick = 0 # shared counter
+
+    def worker():
+        nonlocal tick
+
+        while True:
+            try:
+                job = queue.get_nowait() # choose next job
+            except Exception:
+                break # if queue empty
+
+            try:
+                record = scan_one_path(job.path)
+                record["arrival"] = job.arrival
+                record["est_cost"] = job.est_cost
+                record["queue_level"] = job.queue_level
+                with tick_lock:
+                    tick += 1
+                    record["tick_ran"] = tick
+                with write_lock:
+                    f.write(json.dumps(record) + "\n")
+            except Exception as e:
+                with write_lock:
+                    f.write(json.dumps({"path": str(job.path), "error": f"ThreadError: {e}"}) + "\n")
+                    print(f"Path '{job.path}' raised error: {e}")
+            finally:
+                queue.task_done()
+                # on_job_feedback(job, record) # TODO
+    
+    with output_jsonl.open("w", encoding="utf-8") as f:
+        threads = [threading.Thread(target=worker, daemon=True) for _ in range(max_workers)]
+        for thread in threads:
+            thread.start()
+        queue.join() # wait until all jobs completed
+        for thread in threads:
+            thread.join(timeout=0.1) # let threads exit cleanly
+
+    end = time.perf_counter()
+    print(f"Threaded indexing for '{root or "root"}' took {end - start: 0.4f} seconds (max workers: {max_workers})")
 
 # -----------------------------
 # CLI (first version)
@@ -274,9 +338,11 @@ def hash_file(
 
 if __name__ == "__main__":
     # FileIndexerCLI().cmdloop()
-    root_folder = Path(r"")
-    # output_file = Path.cwd() / "outputs" / "index_results.jsonl"
-    output_file = Path.cwd() / "temp" / "index_results.jsonl"
-    run_indexer(root_folder, output_file)
-    print(f"Done. Wrote: {output_file.resolve()}")
+    # root_folder = Path(r"")
+    # # output_file = Path.cwd() / "outputs" / "index_results.jsonl"
+    # output_file = Path.cwd() / "temp" / "index_results.jsonl"
+    # run_indexer(root_folder, output_file)
+    # print(f"Done. Wrote: {output_file.resolve()}")
+    run_indexer()
+    run_indexer_threaded(max_workers=4)
     

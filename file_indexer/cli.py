@@ -30,13 +30,13 @@ def main(
 @app.command()
 def get_greater_than(
     root_path: str = typer.Option(
-        r"",
+        None,
         "--root-path",
         "rp",
         help="Choose the root path to search.",
     ),
     output_path: str = typer.Option(
-        r"",
+        None,
         "--output",
         "-o",
         help="Choose where file outputs to.",
