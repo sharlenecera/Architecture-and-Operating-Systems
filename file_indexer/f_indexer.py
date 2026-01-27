@@ -21,10 +21,11 @@ import mimetypes
 import hashlib
 import threading
 import time
+import multiprocessing as mp
 from pathlib import Path
-from collections import deque
+# from collections import deque
 from dataclasses import dataclass
-from queue import Queue
+from queue import Queue as TQueue
 from typing import Deque, Dict, Any, List, Optional
 
 
@@ -194,29 +195,37 @@ def run_indexer(
 
     tick = 0
 
-    with output_jsonl.open("w", encoding="utf-8") as f:
-        while ready:
-            tick += 1
+    try:
+        with output_jsonl.open("w", encoding="utf-8") as f:
+            while ready:
+                tick += 1
 
-            job = choose_next_job(ready, tick)
-            if job is None:
-                continue
+                job = choose_next_job(ready, tick)
+                if job is None:
+                    continue
 
-            # "Run" the job: do one index operation
-            record = scan_one_path(job.path)
+                # "Run" the job: do one index operation
+                record = scan_one_path(job.path)
 
-            # Helpful fields to see scheduling outcomes
-            record["arrival"] = job.arrival
-            record["est_cost"] = job.est_cost
-            record["queue_level"] = job.queue_level
-            record["tick_ran"] = tick
+                # Helpful fields to see scheduling outcomes
+                record["arrival"] = job.arrival
+                record["est_cost"] = job.est_cost
+                record["queue_level"] = job.queue_level
+                record["tick_ran"] = tick
 
-            # Feedback hook (MLFQ-style adaptations)
-            on_job_feedback(job, record)
+                # Feedback hook (MLFQ-style adaptations)
+                on_job_feedback(job, record)
 
-            # Write one record per line (easy to parse and analyse)
-            f.write(json.dumps(record) + "\n")
-        end = time.perf_counter()
+                # Write one record per line (easy to parse and analyse)
+                f.write(json.dumps(record) + "\n")
+            end = time.perf_counter()
+    except FileNotFoundError:
+        print(f"File not found: {str(output_jsonl)}")
+        return
+    except Exception as e:
+        print(f"Error: {e}")
+        return
+
     print(f"Control indexing for '{root or "root"}' took {end - start: 0.4f} seconds")
 
 
@@ -231,7 +240,7 @@ def run_indexer_threaded(
     jobs = build_jobs(root, greater_than)
     ready: list[Job] = sorted(jobs, key=lambda j: j.arrival)
 
-    queue: Queue[Job] = Queue()
+    queue: TQueue[Job] = TQueue()
     for job in ready:
         queue.put(job)
 
@@ -258,6 +267,9 @@ def run_indexer_threaded(
                     record["tick_ran"] = tick
                 with write_lock:
                     f.write(json.dumps(record) + "\n")
+            except FileNotFoundError:
+                print(f"File not found: {str(output_jsonl)}")
+                return
             except Exception as e:
                 with write_lock:
                     f.write(json.dumps({"path": str(job.path), "error": f"ThreadError: {e}"}) + "\n")
@@ -276,6 +288,58 @@ def run_indexer_threaded(
 
     end = time.perf_counter()
     print(f"Threaded indexing for '{root or "root"}' took {end - start: 0.4f} seconds (max workers: {max_workers})")
+
+
+# moved outside to make it pickleable for multiprocessing
+def mp_worker(
+    job: Job,
+) -> dict[str, object]:
+    record = scan_one_path(job.path)
+    record["arrival"] = job.arrival
+    record["est_cost"]  = job.est_cost
+    record["queue_level"] = job.queue_level
+    return record
+
+
+def run_indexer_multiprocessed(
+    root: Path = Path(r""),
+    output_jsonl: Path = Path("index_results_multiprocessed.jsonl"),
+    greater_than: int = 0,
+    processes: int | None = None,   # mp chooses if none given
+    chunksize: int = 64,
+) -> None:
+    start = time.perf_counter()
+
+    jobs = build_jobs(root, greater_than)
+
+    ready: list[Job] = sorted(jobs, key=lambda j: j.arrival)
+    schedule: list[Job] = []
+    tmp_tick = 0
+    while ready:
+        tmp_tick += 1
+        job = choose_next_job(ready, tmp_tick)
+        if job is not None:
+            schedule.append(job)
+    try:
+        with output_jsonl.open("w", encoding="utf-8") as f:
+            with mp.Pool(processes=processes) as pool:
+                # imap preserves input order and lets you set chunksize
+                for i, record in enumerate(pool.imap(mp_worker, schedule, chunksize=chunksize), start=1):
+                    record["tick_ran"] = i
+                    # on_job_feedback(schedule[i-1], record)
+
+                    f.write(json.dumps(record) + "\n")
+
+    except FileNotFoundError:
+        print(f"File not found: {str(output_jsonl)}")
+        return
+    except Exception as e:
+        print(f"Error: {e}")
+        return
+
+    end = time.perf_counter()
+    print(f"Multiprocessed indexing for '{root or "root"}' took {end - start: 0.4f} seconds (max workers: {processes})")
+
 
 # -----------------------------
 # CLI (first version)
@@ -343,6 +407,7 @@ if __name__ == "__main__":
     # output_file = Path.cwd() / "temp" / "index_results.jsonl"
     # run_indexer(root_folder, output_file)
     # print(f"Done. Wrote: {output_file.resolve()}")
-    run_indexer()
-    run_indexer_threaded(max_workers=4)
+    # run_indexer()
+    # run_indexer_threaded(max_workers=4)
+    run_indexer_multiprocessed(output_jsonl=Path("index_results_multiprocessed.jsonl"))
     
