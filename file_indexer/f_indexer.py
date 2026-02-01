@@ -323,6 +323,9 @@ def run_indexer_multiprocessed(
     try:
         with output_jsonl.open("w", encoding="utf-8") as f:
             with mp.Pool(processes=processes) as pool:
+                # find number of processes, if None, it is CPU count by default
+                if not processes:
+                    processes = mp.cpu_count()
                 # imap preserves input order and lets you set chunksize
                 for i, record in enumerate(pool.imap(mp_worker, schedule, chunksize=chunksize), start=1):
                     record["tick_ran"] = i
@@ -402,12 +405,10 @@ def hash_file(
 
 if __name__ == "__main__":
     # FileIndexerCLI().cmdloop()
-    # root_folder = Path(r"")
-    # # output_file = Path.cwd() / "outputs" / "index_results.jsonl"
-    # output_file = Path.cwd() / "temp" / "index_results.jsonl"
-    # run_indexer(root_folder, output_file)
+    # output_file = Path.cwd() / "outputs" / "index_results.jsonl"
+    # run_indexer(output_jsonl=output_file)
     # print(f"Done. Wrote: {output_file.resolve()}")
-    # run_indexer()
-    # run_indexer_threaded(max_workers=4)
+    run_indexer()
+    run_indexer_threaded(max_workers=12)
     run_indexer_multiprocessed(output_jsonl=Path("index_results_multiprocessed.jsonl"))
     
