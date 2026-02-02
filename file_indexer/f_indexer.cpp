@@ -10,6 +10,13 @@
 #include <thread>
 #include <mutex>
 #include <atomic>
+#if defined(__APPLE__)
+  #include <sys/types.h>
+  #include <sys/wait.h>
+  #include <unistd.h>
+  #include <cerrno>
+#endif
+
 using namespace std;
 
 namespace fs = filesystem;
@@ -234,7 +241,7 @@ static void runIndexer(
     auto start = chrono::high_resolution_clock::now();
 
     // set default directory if none
-    if (root.empty()) root = fs::current_path();
+    if (root.empty()) root = fs::current_path().parent_path();
 
     vector<Job> jobs = buildJobs(root);
 
@@ -277,8 +284,9 @@ static void runIndexer(
 
     auto end = chrono::high_resolution_clock::now();
     chrono::duration<double> elapsed = end - start;
-    cout << "Control indexing for " << root
-        << " took " << elapsed.count() << " seconds.\n";
+    cout << "Control indexing\n" << "Root: " << root << "\n"
+        << "Elapsed time: " << elapsed.count() << " seconds \n"
+        << "---------------------------------------------------------------------------\n";
 }
 
 
@@ -288,7 +296,7 @@ static void run_indexer_threading(
     unsigned int num_threads = thread::hardware_concurrency())
 {
     auto start = chrono::high_resolution_clock::now();
-    if (root.empty()) root = fs::current_path();
+    if (root.empty()) root = fs::current_path().parent_path();
 
     vector<Job> jobs = buildJobs(root);
 
@@ -342,16 +350,160 @@ static void run_indexer_threading(
 
     auto end = chrono::high_resolution_clock::now();
     chrono::duration<double> elapsed = end - start;
-    cout << "Threaded indexing for " << root
-        << " took " << elapsed.count() << " seconds"
-        << " using " << num_threads << " thread(s)\n";
+    cout << "Threaded indexing\n" << "Root: " << root << "\n"
+        << "Elapsed time: " << elapsed.count() << " seconds\n"
+        << "Number of threads: " << num_threads << "\n"
+        << "---------------------------------------------------------------------------\n";
+}
+
+
+static void run_indexer_multiprocessing(
+    fs::path root,
+    const fs::path& outputJsonl,
+    unsigned int num_processes = thread::hardware_concurrency())
+{
+#if defined(__APPLE__)
+    auto start_time = chrono::high_resolution_clock::now();
+    if (root.empty()) root = fs::current_path().parent_path();
+    vector<Job> jobs = buildJobs(root);
+
+    // if nothing to do, create and return the output
+    {
+        ofstream out(outputJsonl);
+        if (!out) throw runtime_error("Cannot open output file for writing.");
+        if (jobs.empty()) {
+            cout << "Done (multiprocess). Wrote empty file: " << outputJsonl << "\n";
+            return;
+        }
+    }
+
+    // ensure at least 1 process
+    if (num_processes == 0) num_processes = 1;
+    if (num_processes > jobs.size()) num_processes = static_cast<unsigned int>(jobs.size());
+
+
+    // compute close-to-equal slices for each worker
+    const size_t N = jobs.size();
+    const size_t base = N / num_processes;
+    const size_t remainder  = N % num_processes;
+
+    vector<pair<size_t,size_t>> ranges;
+    ranges.reserve(num_processes);
+
+    size_t start = 0;
+    for (unsigned int i = 0; i < num_processes; ++i) {
+        size_t len = base + (i < remainder ? 1 : 0); // split remainder into slices
+        size_t end = start + len;
+        ranges.emplace_back(start, end);
+        start = end;
+    }
+
+    // put temp files in same directory as output file
+    fs::path out_dir = outputJsonl.has_parent_path() ? outputJsonl.parent_path() : fs::current_path();
+    const string base_name = outputJsonl.filename().string();
+
+    vector<pid_t> pids;
+    vector<fs::path> part_files;
+    pids.reserve(num_processes);
+    part_files.reserve(num_processes);
+
+    // fork worker processes
+    for (unsigned int i = 0; i < num_processes; ++i) {
+        // make a temp file
+        fs::path part = out_dir / (base_name + ".part." + to_string(i) + ".tmp");
+
+        pid_t pid = ::fork();
+        if (pid == 0) { // ------ CHILD process ------
+            // open part file
+            ofstream part_out(part);
+            if (!part_out) {
+                // child: exit with to allow proper code clean up of forked process
+                _exit(111);
+            }
+
+            int local_tick = 0;
+            const auto [s, e] = ranges[i];
+            for (size_t j = s; j < e; ++j) {
+                Job job = jobs[j];
+                string record = scanOnePathJson(job.path);
+
+                ++local_tick;
+                if (!record.empty() && record.back() == '}') {
+                    record.pop_back();
+                    record += ",\"arrival\":\" "     + to_string(job.arrival);
+                    record += ",\"est_cost\":\" "    + to_string(job.est_cost);
+                    record += ",\"queue_level\":\" " + to_string(job.queue_level);
+                    record += ",\"tick_ran\":\" "    + to_string(local_tick);
+                    record += ",\"proc_index\":\" "  + to_string(i);
+                    record += "}";
+                }
+
+                onJobFeedback(job, record);
+                part_out << record << "\n";
+            }
+
+            part_out.close();
+            _exit(0);   // means success
+        }
+        else if (pid > 0) { // ------ PARENT process ------
+            pids.push_back(pid);
+            part_files.push_back(part);
+        }
+        else { // ------ fork failed ------
+            throw runtime_error("fork() failed: " + to_string(errno));
+        }
+    }
+
+    // wait for all children to finish
+    for (pid_t pid : pids) {
+        int status = 0;
+        if (::waitpid(pid, &status, 0) == -1) {
+            throw runtime_error("waitpid() failed: " + to_string(errno));
+        }
+        // check if child terminated normally or exit successfully
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+            throw runtime_error("Child process failed (pid " + to_string(pid) + ")");
+        }
+    }
+
+    // concatenate part files in slice order to make final output
+    {
+        ofstream out(outputJsonl, ios::trunc);
+        if (!out) throw runtime_error("Could not open output file for concatenation.");
+
+        for (unsigned int i = 0; i < num_processes; ++i) {
+            ifstream in(part_files[i], ios::binary);
+            if (!in) throw runtime_error("Could not open part file: " + part_files[i].string());
+            out << in.rdbuf();
+        }
+    }
+
+    // delete each .tmp file
+    for (const auto& p : part_files) {
+        error_code ec;
+        fs::remove(p, ec);
+    }
+
+
+    auto end_time = chrono::high_resolution_clock::now();
+    chrono::duration<double> elapsed = end_time - start_time;
+    cout << "Multiprocessed indexing\n" << "Directory: " << root << "\n"
+        << "Elapsed time: " << elapsed.count() << " seconds\n"
+        << "Number of processes: " << num_processes << "\n"
+        << "---------------------------------------------------------------------------\n";
+
+#else
+    (void)root; (void)outputJsonl; (void)num_processes;
+    throw runtime_error("run_indexer_multiprocessing is POSIX-only (macOS/Linux).");
+#endif
 }
 
 
 int main() {
     try {
         runIndexer("", "cpp_index_results.jsonl");
-        run_indexer_threading("", "cpp_index_results_threaded.jsonl", 4);
+        run_indexer_threading("", "cpp_index_results_threaded.jsonl");
+        run_indexer_multiprocessing("", "cpp_index_results_multiprocessed.jsonl");
     }
     catch (const exception& e) {
         cerr << "Fatal error: " << e.what() << "\n";
