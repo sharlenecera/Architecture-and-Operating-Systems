@@ -510,11 +510,60 @@ static void run_indexer_multiprocessing(
 }
 
 
-int main() {
+int main(int argc, char** argv) {
+    fs::path root = "";
+    int greater_than = 0;
+    int threads = thread::hardware_concurrency();
+    int processes = thread::hardware_concurrency();
+    fs::path lin_out_file = "cpp_index_results.jsonl";
+    fs::path th_out_file = "cpp_index_results_threaded.jsonl";
+    fs::path mp_out_file = "cpp_index_results_multiprocessed.jsonl";
+    
+        for (int i = 1; i < argc; ++i) {
+            std::string arg = argv[i];
+
+            if (arg == "--root" && i + 1 < argc) {
+                root = argv[++i];
+            }
+            else if (arg == "--linear_output" && i + 1 < argc) {
+                lin_out_file = argv[++i];
+            }
+            else if (arg == "--threading_output" && i + 1 < argc) {
+                th_out_file = argv[++i];
+            }
+            else if (arg == "--multiprocessing_output" && i + 1 < argc) {
+                mp_out_file = argv[++i];
+            }
+            else if (arg == "--greater_than" && i + 1 < argc) {
+                greater_than = std::stoll(argv[++i]);
+            }
+            else if (arg == "--threads" && i + 1 < argc) {
+                threads = std::stoll(argv[++i]);
+            }
+            else if (arg == "--processes" && i + 1 < argc) {
+                processes = std::stoll(argv[++i]);
+            }
+            else if (arg == "--help") {
+                std::cout << "Usage:\n"
+                          << "  --root <directory>\n"
+                          << "  --linear_output <filename>\n"
+                          << "  --threading_output <filename>\n"
+                          << "  --multiprocessing_output <filename>\n"
+                          << "  --greater_than <bytes>\n"
+                          << "  --threads <num_threads>\n"
+                          << "  --processes <num_processes>\n";
+                return 0;
+            }
+            else {
+                std::cerr << "Unknown flag: " << arg << "\n";
+                return 1;
+            }
+        }
+
     try {
-        run_indexer("", "cpp_index_results.jsonl", 100);
-        run_indexer_threading("", "cpp_index_results_threaded.jsonl", 100);
-        run_indexer_multiprocessing("", "cpp_index_results_multiprocessed.jsonl", 100);
+        run_indexer(root, lin_out_file, greater_than);
+        run_indexer_threading(root, th_out_file, greater_than, threads);
+        run_indexer_multiprocessing(root, mp_out_file, greater_than, processes);
     }
     catch (const exception& e) {
         cerr << "Fatal error: " << e.what() << "\n";
