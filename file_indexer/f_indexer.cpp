@@ -154,7 +154,10 @@ static string scanOnePathJson(const fs::path& p) {
 // -----------------------------
 // Job creation (workload)
 // -----------------------------
-static vector<Job> buildJobs(const fs::path& root) {
+static vector<Job> buildJobs(
+    const fs::path& root,
+    const int& greater_than)
+{
     vector<Job> jobs;
     int tick = 0;
 
@@ -171,6 +174,8 @@ static vector<Job> buildJobs(const fs::path& root) {
         } catch (...) {
             size_bytes = 0;
         }
+
+        if (size_bytes < greater_than) continue;
 
         int est = 1;
         if (size_bytes >= 100000ULL && size_bytes < 10000000ULL) est = 2;   // 100KB..10MB
@@ -234,16 +239,17 @@ static void onJobFeedback(Job& /*job*/, const string& /*jsonRecord*/) {
 // -----------------------------
 // Simulation loop (runs "scheduler")
 // -----------------------------
-static void runIndexer(
+static void run_indexer(
     fs::path root,
-    const fs::path& outputJsonl)
+    const fs::path& outputJsonl,
+    const int& greater_than = 0)
 {
     auto start = chrono::high_resolution_clock::now();
 
     // set default directory if none
     if (root.empty()) root = fs::current_path().parent_path();
 
-    vector<Job> jobs = buildJobs(root);
+    vector<Job> jobs = buildJobs(root, greater_than);
 
     // In this simple model, all jobs are ready immediately.
     deque<Job> ready(jobs.begin(), jobs.end());
@@ -285,6 +291,7 @@ static void runIndexer(
     auto end = chrono::high_resolution_clock::now();
     chrono::duration<double> elapsed = end - start;
     cout << "Control indexing\n" << "Root: " << root << "\n"
+        << "Greater than (bytes): " << (greater_than ? to_string(greater_than) : "") << (greater_than ? "\n" : "")    
         << "Elapsed time: " << elapsed.count() << " seconds \n"
         << "---------------------------------------------------------------------------\n";
 }
@@ -293,12 +300,13 @@ static void runIndexer(
 static void run_indexer_threading(
     fs::path root,
     const fs::path& outputJsonl,
+    const int& greater_than = 0,
     unsigned int num_threads = thread::hardware_concurrency())
 {
     auto start = chrono::high_resolution_clock::now();
     if (root.empty()) root = fs::current_path().parent_path();
 
-    vector<Job> jobs = buildJobs(root);
+    vector<Job> jobs = buildJobs(root, greater_than);
 
     // open shared output file
     ofstream out(outputJsonl);
@@ -351,6 +359,7 @@ static void run_indexer_threading(
     auto end = chrono::high_resolution_clock::now();
     chrono::duration<double> elapsed = end - start;
     cout << "Threaded indexing\n" << "Root: " << root << "\n"
+        << "Greater than (bytes): " << (greater_than ? to_string(greater_than) : "") << (greater_than ? "\n" : "")
         << "Elapsed time: " << elapsed.count() << " seconds\n"
         << "Number of threads: " << num_threads << "\n"
         << "---------------------------------------------------------------------------\n";
@@ -360,12 +369,13 @@ static void run_indexer_threading(
 static void run_indexer_multiprocessing(
     fs::path root,
     const fs::path& outputJsonl,
+    const int& greater_than = 0,
     unsigned int num_processes = thread::hardware_concurrency())
 {
 #if defined(__APPLE__)
     auto start_time = chrono::high_resolution_clock::now();
     if (root.empty()) root = fs::current_path().parent_path();
-    vector<Job> jobs = buildJobs(root);
+    vector<Job> jobs = buildJobs(root, greater_than);
 
     // if nothing to do, create and return the output
     {
@@ -488,6 +498,7 @@ static void run_indexer_multiprocessing(
     auto end_time = chrono::high_resolution_clock::now();
     chrono::duration<double> elapsed = end_time - start_time;
     cout << "Multiprocessed indexing\n" << "Directory: " << root << "\n"
+        << "Greater than (bytes): " << (greater_than ? to_string(greater_than) : "") << (greater_than ? "\n" : "")
         << "Elapsed time: " << elapsed.count() << " seconds\n"
         << "Number of processes: " << num_processes << "\n"
         << "---------------------------------------------------------------------------\n";
@@ -501,9 +512,9 @@ static void run_indexer_multiprocessing(
 
 int main() {
     try {
-        runIndexer("", "cpp_index_results.jsonl");
-        run_indexer_threading("", "cpp_index_results_threaded.jsonl");
-        run_indexer_multiprocessing("", "cpp_index_results_multiprocessed.jsonl");
+        run_indexer("", "cpp_index_results.jsonl", 100);
+        run_indexer_threading("", "cpp_index_results_threaded.jsonl", 100);
+        run_indexer_multiprocessing("", "cpp_index_results_multiprocessed.jsonl", 100);
     }
     catch (const exception& e) {
         cerr << "Fatal error: " << e.what() << "\n";
