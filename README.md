@@ -32,5 +32,5 @@ To compile and run on a MacOS terminal, do:
 ```sh
 cd <director_of_cpp_file>
 clang++ -std=c++17 -O2 -mmacosx-version-min=10.15 f_indexer.cpp -o f_indexer
-./f_indexer
+./f_indexer --help
 ```
