@@ -32,7 +32,7 @@ def get_greater_than(
     root_path: str = typer.Option(
         None,
         "--root-path",
-        "rp",
+        "-rp",
         help="Choose the root path to search.",
     ),
     output_path: str = typer.Option(
