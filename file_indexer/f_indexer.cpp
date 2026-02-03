@@ -16,10 +16,55 @@
   #include <unistd.h>
   #include <cerrno>
 #endif
+// below for hashing:
+#include "digestpp/digestpp.hpp"
+#include <sstream>
 
 using namespace std;
+using namespace digestpp;
 
 namespace fs = filesystem;
+
+
+static string hash_file(
+    fs::path path,
+    const string& hash_type = "sha256")
+{
+    if (path.empty()) path = fs::current_path();
+    string algorithm;
+    algorithm.reserve(hash_type.size());
+    for (char c : hash_type) algorithm.push_back(static_cast<char>(tolower(static_cast<unsigned char>(c))));
+
+    // aliases
+    if (algorithm == "sha-256")  algorithm = "sha256";
+    if (algorithm == "sha-512")  algorithm = "sha512";
+    if (algorithm == "sha3")     algorithm = "sha3-256";
+    if (algorithm == "blake2")   algorithm = "blake2b";
+
+    // open file
+    ifstream file(path, ios::binary);
+    if (!file) {
+        throw runtime_error("Could not open file for hashing: " + path.string());
+    }
+
+    // only including some algorithms
+    if (algorithm == "sha256") {
+        return sha256().absorb(file).hexdigest();
+    } else if (algorithm == "sha512") {
+        return sha512().absorb(file).hexdigest();
+    } else if (algorithm == "sha3-256") {
+        return sha3(256).absorb(file).hexdigest();
+    } else if (algorithm == "sha3-512") {
+        return sha3(512).absorb(file).hexdigest();
+    } else if (algorithm == "blake2b" || algorithm == "blake2b512") {
+        return blake2b(512).absorb(file).hexdigest();
+    } else if (algorithm == "blake2s" || algorithm == "blake2s256") {
+        return blake2s(256).absorb(file).hexdigest();
+    } else if (algorithm == "md5") {
+        return md5().absorb(file).hexdigest();
+    }
+    throw runtime_error("Unsupported/unknown hash algorithm: " + hash_type);
+}
 
 
 // -----------------------------
@@ -89,7 +134,10 @@ static long long fileTimeToEpochSeconds(fs::file_time_type ft) {
 // -----------------------------
 // Indexing work (the "CPU burst")
 // -----------------------------
-static string scanOnePathJson(const fs::path& p) {
+static string scanOnePathJson(
+    const fs::path& p,
+    const string hash_algorithm)
+{
     // Build ONE JSON object (as a string) representing the file record.
     // Keep it simple: path, name, size, last_write_time, type flags, permissions, errors.
     string pathStr = p.string();
@@ -102,6 +150,7 @@ static string scanOnePathJson(const fs::path& p) {
     long long mtime_epoch = 0;
     string perms_rwx = "---------";
     string error;
+    string file_hash;
 
     try {
         // status() follows symlinks; symlink_status() does not
@@ -110,6 +159,14 @@ static string scanOnePathJson(const fs::path& p) {
         is_symlink = fs::is_symlink(st);
         is_file = fs::is_regular_file(st);
         is_dir = fs::is_directory(st);
+
+        if (!hash_algorithm.empty() && is_file) {
+            try {
+                file_hash = hash_file(p, hash_algorithm);
+            } catch (const exception& e) {
+                file_hash = string("ERROR: ") + e.what();
+            }
+        }
 
         // Size only valid for regular files
         if (is_file) {
@@ -141,6 +198,10 @@ static string scanOnePathJson(const fs::path& p) {
     json += "\"size_bytes\":" + to_string(size_bytes) + ",";
     json += "\"mtime_epoch\":" + to_string(mtime_epoch) + ",";
     json += "\"perms_rwx\":\"" + perms_rwx + "\"";
+    if (!file_hash.empty()) {
+        json += ",\"hash_algorithm\":\"" + jsonEscape(hash_algorithm) + "\"";
+        json += ",\"hash\":\"" + file_hash + "\"";
+    }
 
     if (!error.empty()) {
         json += ",\"error\":\"" + jsonEscape(error) + "\"";
@@ -242,6 +303,7 @@ static void onJobFeedback(Job& /*job*/, const string& /*jsonRecord*/) {
 static void run_indexer(
     fs::path root,
     const fs::path& outputJsonl,
+    const string hash_algorithm = "sha256",
     const int& greater_than = 0)
 {
     auto start = chrono::high_resolution_clock::now();
@@ -270,7 +332,7 @@ static void run_indexer(
         Job job = next.value();
 
         // "Run" job (index one file)
-        string record = scanOnePathJson(job.path);
+        string record = scanOnePathJson(job.path, hash_algorithm);
 
         // Add a few scheduling fields (simple: append before closing brace)
         // (Teaching-friendly; students can make proper JSON building later.)
@@ -291,6 +353,7 @@ static void run_indexer(
     auto end = chrono::high_resolution_clock::now();
     chrono::duration<double> elapsed = end - start;
     cout << "Control indexing\n" << "Root: " << root << "\n"
+        << "Hash algorithm: " << hash_algorithm << "\n"
         << "Greater than (bytes): " << (greater_than ? to_string(greater_than) : "") << (greater_than ? "\n" : "")    
         << "Elapsed time: " << elapsed.count() << " seconds \n"
         << "---------------------------------------------------------------------------\n";
@@ -300,6 +363,7 @@ static void run_indexer(
 static void run_indexer_threading(
     fs::path root,
     const fs::path& outputJsonl,
+    const string hash_algorithm = "sha256",
     const int& greater_than = 0,
     unsigned int num_threads = thread::hardware_concurrency())
 {
@@ -333,7 +397,7 @@ static void run_indexer_threading(
                 if (i >= jobs.size()) break;
 
                 const Job& job = jobs[i];
-                string record = scanOnePathJson(job.path);
+                string record = scanOnePathJson(job.path, hash_algorithm);
 
                 int my_tick = tick.fetch_add(1, memory_order_relaxed) + 1;
                 if (!record.empty() && record.back() == '}') {
@@ -359,6 +423,7 @@ static void run_indexer_threading(
     auto end = chrono::high_resolution_clock::now();
     chrono::duration<double> elapsed = end - start;
     cout << "Threaded indexing\n" << "Root: " << root << "\n"
+        << "Hash algorithm: " << hash_algorithm << "\n"
         << "Greater than (bytes): " << (greater_than ? to_string(greater_than) : "") << (greater_than ? "\n" : "")
         << "Elapsed time: " << elapsed.count() << " seconds\n"
         << "Number of threads: " << num_threads << "\n"
@@ -369,6 +434,7 @@ static void run_indexer_threading(
 static void run_indexer_multiprocessing(
     fs::path root,
     const fs::path& outputJsonl,
+    const string hash_algorithm = "sha256",
     const int& greater_than = 0,
     unsigned int num_processes = thread::hardware_concurrency())
 {
@@ -435,7 +501,7 @@ static void run_indexer_multiprocessing(
             const auto [s, e] = ranges[i];
             for (size_t j = s; j < e; ++j) {
                 Job job = jobs[j];
-                string record = scanOnePathJson(job.path);
+                string record = scanOnePathJson(job.path, hash_algorithm);
 
                 ++local_tick;
                 if (!record.empty() && record.back() == '}') {
@@ -498,6 +564,7 @@ static void run_indexer_multiprocessing(
     auto end_time = chrono::high_resolution_clock::now();
     chrono::duration<double> elapsed = end_time - start_time;
     cout << "Multiprocessed indexing\n" << "Directory: " << root << "\n"
+        << "Hash algorithm: " << hash_algorithm << "\n"
         << "Greater than (bytes): " << (greater_than ? to_string(greater_than) : "") << (greater_than ? "\n" : "")
         << "Elapsed time: " << elapsed.count() << " seconds\n"
         << "Number of processes: " << num_processes << "\n"
@@ -518,52 +585,75 @@ int main(int argc, char** argv) {
     fs::path lin_out_file = "cpp_index_results.jsonl";
     fs::path th_out_file = "cpp_index_results_threaded.jsonl";
     fs::path mp_out_file = "cpp_index_results_multiprocessed.jsonl";
+    string hash_algorithm = "sha256";
+    fs::path file_to_hash = "";
     
-        for (int i = 1; i < argc; ++i) {
-            std::string arg = argv[i];
+    for (int i = 1; i < argc; ++i) {
+        string arg = argv[i];
 
-            if (arg == "--root" && i + 1 < argc) {
-                root = argv[++i];
-            }
-            else if (arg == "--linear_output" && i + 1 < argc) {
-                lin_out_file = argv[++i];
-            }
-            else if (arg == "--threading_output" && i + 1 < argc) {
-                th_out_file = argv[++i];
-            }
-            else if (arg == "--multiprocessing_output" && i + 1 < argc) {
-                mp_out_file = argv[++i];
-            }
-            else if (arg == "--greater_than" && i + 1 < argc) {
-                greater_than = std::stoll(argv[++i]);
-            }
-            else if (arg == "--threads" && i + 1 < argc) {
-                threads = std::stoll(argv[++i]);
-            }
-            else if (arg == "--processes" && i + 1 < argc) {
-                processes = std::stoll(argv[++i]);
-            }
-            else if (arg == "--help") {
-                std::cout << "Usage:\n"
-                          << "  --root <directory>\n"
-                          << "  --linear_output <filename>\n"
-                          << "  --threading_output <filename>\n"
-                          << "  --multiprocessing_output <filename>\n"
-                          << "  --greater_than <bytes>\n"
-                          << "  --threads <num_threads>\n"
-                          << "  --processes <num_processes>\n";
-                return 0;
-            }
-            else {
-                std::cerr << "Unknown flag: " << arg << "\n";
-                return 1;
-            }
+        if (arg == "--root" && i + 1 < argc) {
+            root = argv[++i];
         }
+        else if (arg == "--linear_output" && i + 1 < argc) {
+            lin_out_file = argv[++i];
+        }
+        else if (arg == "--threading_output" && i + 1 < argc) {
+            th_out_file = argv[++i];
+        }
+        else if (arg == "--multiprocessing_output" && i + 1 < argc) {
+            mp_out_file = argv[++i];
+        }
+        else if (arg == "--greater_than" && i + 1 < argc) {
+            greater_than = stoll(argv[++i]);
+        }
+        else if (arg == "--threads" && i + 1 < argc) {
+            threads = stoll(argv[++i]);
+        }
+        else if (arg == "--processes" && i + 1 < argc) {
+            processes = stoll(argv[++i]);
+        }
+        else if (arg == "--hash" && i + 1 < argc) {
+            hash_algorithm = argv[++i];
+        }
+        else if (arg == "--file_to_hash" && i + 1 < argc) {
+            file_to_hash = argv[++i];
+        }
+        else if (arg == "--help") {
+            cout << "Usage:\n"
+                        << "  --root <directory>\n"
+                        << "  --linear_output <filename>\n"
+                        << "  --threading_output <filename>\n"
+                        << "  --multiprocessing_output <filename>\n"
+                        << "  --greater_than <bytes>\n"
+                        << "  --threads <num_threads>\n"
+                        << "  --processes <num_processes>\n"
+                        << "  --hash <algorithm>      "
+                        << "(default:sha256|sha512|sha3-256|sha3-512|blake2b|blake2s|md5)\n"
+                        << "  --file_to_hash <filename> (indexer does not run with this)\n";
+            return 0;
+        }
+        else {
+            cerr << "Unknown flag: " << arg << "\n";
+            return 1;
+        }
+    }
 
     try {
-        run_indexer(root, lin_out_file, greater_than);
-        run_indexer_threading(root, th_out_file, greater_than, threads);
-        run_indexer_multiprocessing(root, mp_out_file, greater_than, processes);
+        
+        // hash file if specified
+        if (!file_to_hash.empty()){
+            string hex_hash = hash_file(file_to_hash, hash_algorithm);
+            cout << "Hash\n" << "File: " << (file_to_hash.empty() ? "." : file_to_hash) << "\n"
+                << "Algorithm: " << hash_algorithm << "\n"
+                << "Result: " << hex_hash << "\n"
+                << "---------------------------------------------------------------------------\n";
+        }
+        // otherwise run indexer
+        else {
+            run_indexer(root, lin_out_file, hash_algorithm, greater_than);
+            run_indexer_threading(root, th_out_file, hash_algorithm, greater_than, threads);
+            run_indexer_multiprocessing(root, mp_out_file, hash_algorithm, greater_than, processes);
+        }
     }
     catch (const exception& e) {
         cerr << "Fatal error: " << e.what() << "\n";

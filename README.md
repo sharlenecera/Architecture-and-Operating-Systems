@@ -28,9 +28,11 @@ File Indexer CLI Service for Architecture and Operating Systems Assignment 2 of 
 ## Running Code
 
 ### C++
-To compile and run on a MacOS terminal, do:
+To compile and run** on a MacOS terminal, do:
 ```sh
 cd <director_of_cpp_file>
 clang++ -std=c++17 -O2 -mmacosx-version-min=10.15 f_indexer.cpp -o f_indexer
 ./f_indexer --help
 ```
+
+**The indexer will always run by default, unless --file_to_hash is specified, in which only the hash file function is called
