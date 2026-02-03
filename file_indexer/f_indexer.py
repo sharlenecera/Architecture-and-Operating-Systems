@@ -276,7 +276,7 @@ def run_indexer_threaded(
                     print(f"Path '{job.path}' raised error: {e}")
             finally:
                 queue.task_done()
-                # on_job_feedback(job, record) # TODO
+                on_job_feedback(job, record) # TODO
     
     with output_jsonl.open("w", encoding="utf-8") as f:
         threads = [threading.Thread(target=worker, daemon=True) for _ in range(max_workers)]
@@ -287,7 +287,7 @@ def run_indexer_threaded(
             thread.join(timeout=0.1) # let threads exit cleanly
 
     end = time.perf_counter()
-    print(f"Threaded indexing for '{root or "root"}' took {end - start: 0.4f} seconds (max workers: {max_workers})")
+    print(f"Threaded indexing for '{root or "root"}' took {end - start: 0.4f} seconds (max threads: {max_workers})")
 
 
 # moved outside to make it pickleable for multiprocessing
@@ -378,9 +378,15 @@ def run_indexer_multiprocessed(
 def get_files_greater_than(
     root: Path,
     output_jsonl: Path,
-    number: int,
+    greater_than: int,
+    indexer_type: str = "linear",
 ) -> None:
-    index_results = run_indexer(root, output_jsonl, greater_than=number)
+    if indexer_type == "linear":
+        run_indexer(root, output_jsonl, greater_than)
+    elif indexer_type == "threaded":    
+        run_indexer_threaded(root, output_jsonl, greater_than)
+    elif indexer_type == "multiprocessed":   
+        run_indexer_multiprocessed(root, output_jsonl, greater_than)
 
 
 def hash_file(

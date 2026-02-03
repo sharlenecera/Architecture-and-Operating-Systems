@@ -28,10 +28,16 @@ File Indexer CLI Service for Architecture and Operating Systems Assignment 2 of 
 ## Running Code
 
 ### Python
-To run on MacOS terminal, do:
+To run on MacOS terminal with flag options, do:
 ```sh
 cd <root_directory>
 python3 -m file_indexer --help
+```
+
+To run just the indexer file:
+```sh
+cd <root_directory>
+python3 file_indexer/f_indexer.py
 ```
 
 ### C++
