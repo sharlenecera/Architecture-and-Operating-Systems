@@ -30,35 +30,38 @@ def main(
 @app.command()
 def get_greater_than(
     root_path: str = typer.Option(
-        None,
+        Path(r""),
         "--root-path",
-        "rp",
+        "-rp",
         help="Choose the root path to search.",
     ),
     output_path: str = typer.Option(
-        None,
+        Path("temp_indexer_results.jsonl"),
         "--output",
         "-o",
         help="Choose where file outputs to.",
         # prompt="Output path of file",
     ),
     min_file_size: int = typer.Option(
-        None,
+        0,
         "--greater-than",
         "-gt",
         help="Get a list of files bigger than x bytes.",
         prompt="Size files must be greater than, in bytes",
     ),
 ) -> None:
-    """Create a list of files bigger than the input number in bytes."""
+    """Create a list of files bigger than the input number in bytes.
+    --root-path/-rp <root-path>
+    --output/-o <output-file>
+    --greater-than/-gt <bytes>"""
     try:
         get_files_greater_than(Path(root_path), Path(output_path), min_file_size)
         print(f"Created list of files greater than {min_file_size} in {output_path or "root directory."}")
     except FileNotFoundError as e:
         print(f"File or directory not found: {e}")
-    except:
+    except Exception as e:
         typer.secho(
-            f"Error occurred when writing to file.",
+            f"Error occurred when writing to file: {e}",
             fg=typer.colors.RED
         )
 
@@ -79,9 +82,13 @@ def checksum(
         help="Type of hash to use"
     )
 ) -> None:
-    """Return the hash of ."""
+    """Return the hash of a file.
+    --file/-f <file-name>
+    --hash/-h <hash-algorithm>"""
     try:
-        print(f"Hash: {hash_file(file_path, hash_type)}")
+        hash_result = hash_file(file_path, hash_type)
+        print(f"Hash algorithm: {hash_type}")
+        print(f"Hash: {hash_result}")
     except ValueError as e:
         print(f"Value Error: {e}")
     except:

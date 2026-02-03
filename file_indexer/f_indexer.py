@@ -46,6 +46,7 @@ class Job:
 # -----------------------------
 def scan_one_path(
     path: Path,
+    hash_algorithm: str = "sha256",
 ) -> Dict[str, Any]:
     """
     Collect file details + basic metadata + basic permissions for ONE filesystem entry.
@@ -63,6 +64,16 @@ def scan_one_path(
         rec["is_file"] = stat.S_ISREG(st.st_mode)
         rec["is_dir"] = stat.S_ISDIR(st.st_mode)
         rec["is_symlink"] = stat.S_ISLNK(st.st_mode)
+
+        if stat.S_ISREG(st.st_mode): # if it is a file
+            try:
+                file_hash = hash_file(str(path), hash_algorithm)
+            except Exception as e:
+                file_hash = f"ERROR: {e}"
+        else:
+            file_hash = ""
+        rec["hash_algorithm"] = hash_algorithm
+        rec["hash"] = file_hash
 
         rec["size_bytes"] = st.st_size
         rec["mtime"] = st.st_mtime # time last modified
@@ -183,6 +194,7 @@ def run_indexer(
     root: Path = Path(r""),
     output_jsonl: Path = Path("index_results.jsonl"),
     greater_than: int = 0,
+    hash_algorithm: str = "sha256",
 ) -> None:
     start = time.perf_counter()
 
@@ -205,7 +217,7 @@ def run_indexer(
                     continue
 
                 # "Run" the job: do one index operation
-                record = scan_one_path(job.path)
+                record = scan_one_path(job.path, hash_algorithm)
 
                 # Helpful fields to see scheduling outcomes
                 record["arrival"] = job.arrival
@@ -226,13 +238,18 @@ def run_indexer(
         print(f"Error: {e}")
         return
 
-    print(f"Control indexing for '{root or "root"}' took {end - start: 0.4f} seconds")
+    print(f"Control indexing")
+    print(f"Root: '{root or "root"}'")
+    print(f"Hash algorithm: {hash_algorithm}")
+    print(f"Elapsed time: {end - start: 0.4f} seconds")
+    print("---------------------------------------------------------------------------")
 
 
 def run_indexer_threaded(
     root: Path = Path(r""),
     output_jsonl: Path = Path("index_results_threaded.jsonl"),
     greater_than: int = 0,
+    hash_algorithm: str = "sha256",
     max_workers: int = 8,
 ) -> None:
     start = time.perf_counter()
@@ -258,7 +275,7 @@ def run_indexer_threaded(
                 break # if queue empty
 
             try:
-                record = scan_one_path(job.path)
+                record = scan_one_path(job.path, hash_algorithm)
                 record["arrival"] = job.arrival
                 record["est_cost"] = job.est_cost
                 record["queue_level"] = job.queue_level
@@ -276,7 +293,7 @@ def run_indexer_threaded(
                     print(f"Path '{job.path}' raised error: {e}")
             finally:
                 queue.task_done()
-                # on_job_feedback(job, record) # TODO
+                on_job_feedback(job, record) # TODO
     
     with output_jsonl.open("w", encoding="utf-8") as f:
         threads = [threading.Thread(target=worker, daemon=True) for _ in range(max_workers)]
@@ -287,14 +304,20 @@ def run_indexer_threaded(
             thread.join(timeout=0.1) # let threads exit cleanly
 
     end = time.perf_counter()
-    print(f"Threaded indexing for '{root or "root"}' took {end - start: 0.4f} seconds (max workers: {max_workers})")
+    print(f"Threaded indexing")
+    print(f"Root: '{root or "root"}'")
+    print(f"Hash algorithm: {hash_algorithm}")
+    print(f"Elapsed time: {end - start: 0.4f} seconds")
+    print(f"Max processes: {max_workers}")
+    print("---------------------------------------------------------------------------")
 
 
 # moved outside to make it pickleable for multiprocessing
 def mp_worker(
     job: Job,
+    hash_algorithm: str = "sha256",
 ) -> dict[str, object]:
-    record = scan_one_path(job.path)
+    record = scan_one_path(job.path, hash_algorithm)
     record["arrival"] = job.arrival
     record["est_cost"]  = job.est_cost
     record["queue_level"] = job.queue_level
@@ -305,6 +328,7 @@ def run_indexer_multiprocessed(
     root: Path = Path(r""),
     output_jsonl: Path = Path("index_results_multiprocessed.jsonl"),
     greater_than: int = 0,
+    hash_algorithm: str = "sha256",
     processes: int | None = None,   # mp chooses if none given
     chunksize: int = 64,
 ) -> None:
@@ -326,13 +350,19 @@ def run_indexer_multiprocessed(
                 # find number of processes, if None, it is CPU count by default
                 if not processes:
                     processes = mp.cpu_count()
-                # imap preserves input order and lets you set chunksize
-                for i, record in enumerate(pool.imap(mp_worker, schedule, chunksize=chunksize), start=1):
+                work_items = [(job, hash_algorithm) for job in schedule]
+
+                # starmap preserves input order and accepts multiple args per task
+                for i, record in enumerate(
+                    pool.starmap(mp_worker, work_items, chunksize=chunksize),
+                    start=1,
+                ):
+
                     record["tick_ran"] = i
                     # on_job_feedback(schedule[i-1], record)
 
                     f.write(json.dumps(record) + "\n")
-
+                
     except FileNotFoundError:
         print(f"File not found: {str(output_jsonl)}")
         return
@@ -341,7 +371,12 @@ def run_indexer_multiprocessed(
         return
 
     end = time.perf_counter()
-    print(f"Multiprocessed indexing for '{root or "root"}' took {end - start: 0.4f} seconds (max workers: {processes})")
+    print(f"Multiprocessed indexing")
+    print(f"Root: '{root or "root"}'")
+    print(f"Hash algorithm: {hash_algorithm}")
+    print(f"Elapsed time: {end - start: 0.4f} seconds")
+    print(f"Max processes: {processes}")
+    print("---------------------------------------------------------------------------")
 
 
 # -----------------------------
@@ -378,9 +413,15 @@ def run_indexer_multiprocessed(
 def get_files_greater_than(
     root: Path,
     output_jsonl: Path,
-    number: int,
+    greater_than: int,
+    indexer_type: str = "linear",
 ) -> None:
-    index_results = run_indexer(root, output_jsonl, greater_than=number)
+    if indexer_type == "linear":
+        run_indexer(root, output_jsonl, greater_than)
+    elif indexer_type == "threaded":    
+        run_indexer_threaded(root, output_jsonl, greater_than)
+    elif indexer_type == "multiprocessed":   
+        run_indexer_multiprocessed(root, output_jsonl, greater_than)
 
 
 def hash_file(
@@ -409,6 +450,5 @@ if __name__ == "__main__":
     # run_indexer(output_jsonl=output_file)
     # print(f"Done. Wrote: {output_file.resolve()}")
     run_indexer()
-    run_indexer_threaded(max_workers=12)
-    run_indexer_multiprocessed(output_jsonl=Path("index_results_multiprocessed.jsonl"))
-    
+    run_indexer_threaded()
+    run_indexer_multiprocessed()
